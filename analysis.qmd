@@ -11,3 +11,105 @@ execute:
 library(tidyverse)
 library(arrow)
 ```
+
+```{r}
+ParquetFileReader$create("data/daily_prices.parquet")$GetSchema()
+```
+
+```{r}
+open_dataset("data/daily_prices.parquet") |>
+  filter(date_raw >= "2025-01-01") |>
+  group_by(coin_id) |>
+  summarise(avg_market_cap_usd = mean(market_cap_usd, na.rm = TRUE)) |>
+  arrange(desc(avg_market_cap_usd)) |>
+  collect()
+```
+
+```{r}
+#| cache: true
+prices <- read_parquet("data/daily_prices.parquet")
+metadata <- read_parquet("data/coin_metadata.parquet")
+categories <- read_parquet("data/categories.parquet")
+
+crypto <- prices |>
+  mutate(date = as.Date(date_raw)) |>
+  left_join(metadata, by = "coin_id") |>
+  left_join(
+    categories |> rename(category_description = description),
+    by = "category_id"
+  )
+```
+
+```{r}
+metadata |>
+  select(coin_id, coin_name, launch_date) |>
+  print(n = Inf)
+```
+
+```{r}
+metadata <- metadata |>
+  mutate(launch_date_parsed = as.Date(
+    lubridate::parse_date_time(launch_date, orders = c("ymd", "B d, Y"))
+  ))
+
+metadata |>
+  arrange(launch_date_parsed) |>
+  select(coin_id, coin_name, launch_date, launch_date_parsed) |>
+  print(n = Inf)
+```
+
+```{r}
+prices |>
+  filter(coin_id == "btc") |>
+  ggplot(aes(x = date_raw, y = price_usd)) +
+  geom_line() +
+  labs(x = "Date", y = "Price (USD)")
+```
+
+```{r}
+category_market_caps <- crypto |>
+  group_by(date, category_name) |>
+  summarise(market_cap_usd = sum(market_cap_usd, na.rm = TRUE), .groups = "drop") |>
+  mutate(category_name = fct_reorder(category_name, market_cap_usd, .fun = mean, .desc = TRUE))
+
+shock_windows <- tibble(
+  event = c("Luna / UST crash", "FTX collapse"),
+  start = as.Date(c("2022-05-07", "2022-11-08")),
+  end = as.Date(c("2022-05-12", "2022-11-11"))
+) |>
+  mutate(midpoint = start + (end - start) / 2)
+
+ggplot(category_market_caps, aes(x = date, y = market_cap_usd, fill = category_name)) +
+  geom_area(position = "fill") +
+  geom_rect(
+    data = shock_windows,
+    aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey30",
+    alpha = 0.16
+  ) +
+  geom_vline(
+    xintercept = c(shock_windows$start, shock_windows$end),
+    color = "grey25",
+    linetype = "dashed",
+    linewidth = 0.4
+  ) +
+  geom_label(
+    data = shock_windows,
+    aes(x = midpoint, y = 1, label = event),
+    inherit.aes = FALSE,
+    vjust = 1.2,
+    size = 3,
+    label.size = 0,
+    fill = "white"
+  ) +
+  scale_fill_viridis_d(option = "D", name = "Category") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  labs(
+    title = "Crypto Market-Cap Composition Over Time",
+    subtitle = "Each colored band shows a category's share of the total market capitalization on each day.",
+    x = "Date",
+    y = "Share of total market capitalization",
+    caption = "Source: Provided daily price, coin metadata, and category data."
+  )
+```
